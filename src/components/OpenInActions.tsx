@@ -1,7 +1,8 @@
 import { Action, Icon, ActionPanel } from "@raycast/api";
 import { Browser, SUPPORTED_BROWSERS } from "../types/browsers";
-import { browserIcon, InstalledBrowsers } from "../utils/browserApps";
-import { openUrlInBrowser } from "../utils/openUrlInBrowser";
+import { browserAppPath, browserIcon, InstalledBrowsers, isBrowserAvailable } from "../utils/browserApps";
+import { buildBrowserUrl } from "../utils/browserUrl";
+import { LaunchedCommand, openUrlInBrowser } from "../utils/openUrlInBrowser";
 
 interface OpenInBrowserSubmenuProps {
   commandPath: string; // Just the path, e.g., "settings"
@@ -10,9 +11,11 @@ interface OpenInBrowserSubmenuProps {
   supportedBrowsers: string[];
   /**
    * Browser key → installed app path. `undefined` while discovery is still running, which is not
-   * the same as "nothing installed" — see the optimism note below.
+   * the same as "nothing installed" — see isBrowserAvailable.
    */
   installedBrowsers: InstalledBrowsers | undefined;
+  /** The command being launched. The launcher decides from this whether to confirm first. */
+  command: LaunchedCommand;
 }
 
 export function OpenInBrowserSubmenu({
@@ -20,36 +23,32 @@ export function OpenInBrowserSubmenu({
   currentBrowser,
   supportedBrowsers,
   installedBrowsers,
+  command,
 }: OpenInBrowserSubmenuProps) {
-  // Find the current browser object
   const selectedBrowser = SUPPORTED_BROWSERS.find((b) => b.key === currentBrowser);
 
-  // Only browsers we can actually hand a URL to, i.e. those with an appName
+  // A browser is offered only if all three hold: we can name an app to launch, it serves this URL,
+  // and it is installed. The same three are applied to the selected browser and to every other one,
+  // so the submenu cannot contradict itself.
   const isLaunchable = (browser: Browser): browser is Browser & { appName: string } => Boolean(browser.appName);
-  // Offering a browser that does not serve this URL just opens an error page, and contradicts the
-  // Supported Browsers row in the same detail pane.
   const serves = (browser: Browser) => supportedBrowsers.includes(browser.key);
-  // A browser you do not have cannot open anything, so it does not belong in a menu whose only job
-  // is to open something. While discovery is still running we assume yes: hiding entries on a slow
-  // first launch reads as a broken menu, and a launch that does fail says so in a toast.
-  const isInstalled = (browser: Browser) => !installedBrowsers || browser.key in installedBrowsers;
+  const available = (browser: Browser) => isBrowserAvailable(installedBrowsers, browser.key);
+  const canOffer = (browser: Browser): browser is Browser & { appName: string } =>
+    isLaunchable(browser) && serves(browser) && available(browser);
 
-  const menuBrowsers = SUPPORTED_BROWSERS.filter(
-    (browser) => browser.key !== currentBrowser && serves(browser) && isInstalled(browser),
-  ).filter(isLaunchable);
-  const showSelected = selectedBrowser && isLaunchable(selectedBrowser) && isInstalled(selectedBrowser);
+  const otherBrowsers = SUPPORTED_BROWSERS.filter((browser) => browser.key !== currentBrowser).filter(canOffer);
+  const showSelected = selectedBrowser !== undefined && canOffer(selectedBrowser);
 
   // An empty submenu is a dead end. Render nothing rather than a menu with no items.
-  if (!showSelected && menuBrowsers.length === 0) return null;
+  if (!showSelected && otherBrowsers.length === 0) return null;
 
-  // Helper to build the full URL with the correct scheme
-  const getFullUrl = (browserScheme: string, path: string): string => {
-    // If the path already contains a scheme (like chrome-untrusted://), return it as-is
-    if (path.includes("://")) {
-      return path;
-    }
-    return `${browserScheme}${path}`;
-  };
+  const launch = (browser: Browser & { appName: string }) =>
+    openUrlInBrowser(
+      // Prefer the discovered bundle path so we open the app whose icon we just showed.
+      { app: browserAppPath(installedBrowsers, browser.key) ?? browser.appName, name: browser.title },
+      buildBrowserUrl(browser.scheme, commandPath),
+      command,
+    );
 
   return (
     <ActionPanel.Submenu title="Open in…" icon={Icon.Globe}>
@@ -57,16 +56,16 @@ export function OpenInBrowserSubmenu({
         <Action
           title={selectedBrowser.title}
           icon={browserIcon(selectedBrowser, installedBrowsers)}
-          onAction={() => openUrlInBrowser(selectedBrowser.appName, getFullUrl(selectedBrowser.scheme, commandPath))}
+          onAction={() => launch(selectedBrowser)}
         />
       )}
 
-      {menuBrowsers.map((browser) => (
+      {otherBrowsers.map((browser) => (
         <Action
           key={browser.key}
           title={browser.title}
           icon={browserIcon(browser, installedBrowsers)}
-          onAction={() => openUrlInBrowser(browser.appName, getFullUrl(browser.scheme, commandPath))}
+          onAction={() => launch(browser)}
         />
       ))}
     </ActionPanel.Submenu>

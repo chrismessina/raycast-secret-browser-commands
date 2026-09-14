@@ -1,11 +1,12 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { Action, ActionPanel, Color, getPreferenceValues, Icon, Keyboard, List } from "@raycast/api";
 import { useCachedPromise, useCachedState, useLocalStorage } from "@raycast/utils";
-import { showError } from "@chrismessina/raycast-kit";
+import { countOf } from "@chrismessina/raycast-kit";
 import { OpenInBrowserSubmenu } from "./components/OpenInActions";
 import { browserCommands } from "./data/paths";
 import { SUPPORTED_BROWSERS, BROWSER_CHROME } from "./types/browsers";
-import { browserIcon, findInstalledBrowsers } from "./utils/browserApps";
+import { browserAppPath, browserIcon, findInstalledBrowsers, isBrowserAvailable } from "./utils/browserApps";
+import { buildBrowserUrl } from "./utils/browserUrl";
 import { openUrlInBrowser } from "./utils/openUrlInBrowser";
 import { BrowserCommand, Platform } from "./types/types";
 
@@ -50,14 +51,19 @@ export default function Command() {
   const hideUntrustedUrls = prefs.hideUntrustedUrls ?? true;
   const hideDeprecatedUrls = prefs.hideDeprecatedUrls ?? true;
 
-  const { data: installedBrowsers } = useCachedPromise(findInstalledBrowsers, [], {
-    keepPreviousData: true,
-  });
+  const {
+    data: installedBrowsers,
+    isLoading: isCheckingBrowsers,
+    revalidate: recheckBrowsers,
+  } = useCachedPromise(findInstalledBrowsers, [], { keepPreviousData: true });
 
   const [searchText, setSearchText] = useState("");
   // useCachedState, not useLocalStorage: this is view state, and its synchronous read means the
   // pane does not flash open on launch before a stored `false` arrives.
   const [showDetail, setShowDetail] = useCachedState<boolean>("show-detail", true);
+  // A view filter rather than a preference: the other three hide things that are dangerous or
+  // gone, which you set once. This one is about how noisy today's list is, so it belongs in reach.
+  const [showUnopenable, setShowUnopenable] = useCachedState<boolean>("show-unopenable", true);
   const {
     value: storedBrowser = DEFAULT_BROWSER_KEY,
     setValue: setSelectedBrowser,
@@ -76,72 +82,83 @@ export default function Command() {
 
   // Anything persisted under this key was written by us as string[], but a corrupt or
   // hand-edited value would otherwise take the whole list down on `.includes`.
-  const starred = useMemo(
+  const hydratedStars = useMemo(
     () => (Array.isArray(starredCommands) ? starredCommands.filter((id) => typeof id === "string") : []),
     [starredCommands],
   );
+
+  // Our own writes live in React state, not a ref synced on every render. A ref reassigned during
+  // render is overwritten by the hook's not-yet-updated array before the next toggle reads it, which
+  // silently dropped the earlier of two quick stars. State survives re-renders, so each toggle
+  // derives from the previous one.
+  const [pendingStars, setPendingStars] = useState<string[] | undefined>(undefined);
+  const starred = pendingStars ?? hydratedStars;
   const starredSet = useMemo(() => new Set(starred), [starred]);
 
-  // setValue is async and does not take an updater, so two quick toggles would both derive from
-  // the same render's array and the second would drop the first. Track the latest set in a ref.
-  const latestStarred = useRef(starred);
-  latestStarred.current = starred;
-
   const toggleStar = (commandId: string) => {
-    // Before hydration finishes the hook hands back DEFAULT_STARRED_COMMANDS, so writing now
-    // would overwrite whatever the user actually had saved.
-    if (isStarredLoading) return;
-    const current = latestStarred.current;
-    const next = current.includes(commandId) ? current.filter((id) => id !== commandId) : [...current, commandId];
-    latestStarred.current = next;
+    // Before the first read lands the hook hands back DEFAULT_STARRED_COMMANDS, so writing now would
+    // overwrite whatever was actually saved. Once we hold our own value we keep accepting toggles —
+    // isStarredLoading also goes true on the re-read after every write, and blocking on that made
+    // Star silently do nothing.
+    if (isStarredLoading && pendingStars === undefined) return;
+    const next = starred.includes(commandId) ? starred.filter((id) => id !== commandId) : [...starred, commandId];
+    setPendingStars(next);
     setStarredCommands(next);
   };
 
   const describe = (command: BrowserCommand) =>
     typeof command.description === "function" ? command.description(currentBrowser) : command.description;
 
-  // Some paths are already absolute ("chrome-untrusted://compose"); prefixing a scheme onto those
-  // produces "chrome://chrome-untrusted://compose". Every caller goes through here.
-  const getFullUrl = (itemPath: string): string =>
-    itemPath.includes("://") ? itemPath : `${currentBrowser.scheme}${itemPath}`;
+  const getFullUrl = (itemPath: string): string => buildBrowserUrl(currentBrowser.scheme, itemPath);
 
   const userPlatform = getCurrentPlatform();
   // `openUrlInBrowser` shells out to macOS `open`. On Windows there is nothing to call, so rather
   // than offer actions that always fail, the extension drops to reference mode: browse and copy.
   const canLaunchBrowsers = userPlatform === "mac";
   // Optimistic until discovery answers — see browserIcon for why undefined is not "absent".
-  const isBrowserInstalled = (key: string) => !installedBrowsers || key in installedBrowsers;
+  const isBrowserInstalled = (key: string) => isBrowserAvailable(installedBrowsers, key);
   const query = searchText.toLowerCase();
 
-  const filteredCommands = browserCommands
-    .filter((command) => {
-      const description = describe(command) || "";
+  // Does the command match what the user asked for — search, browser, platform?
+  const isRelevant = (command: BrowserCommand) => {
+    const description = describe(command) || "";
+    const matchesSearch =
+      command.name.toLowerCase().includes(query) ||
+      command.path.toLowerCase().includes(query) ||
+      getFullUrl(command.path).toLowerCase().includes(query) ||
+      description.toLowerCase().includes(query);
 
-      const matchesSearch =
-        command.name.toLowerCase().includes(query) ||
-        command.path.toLowerCase().includes(query) ||
-        getFullUrl(command.path).toLowerCase().includes(query) ||
-        description.toLowerCase().includes(query);
+    const isBrowserCompatible = command.supportedBrowsers.includes(selectedBrowser);
+    const isPlatformCompatible =
+      (!command.platforms || command.platforms.includes(userPlatform)) &&
+      (!command.excludedPlatforms || !command.excludedPlatforms.includes(userPlatform));
 
-      const isBrowserCompatible = command.supportedBrowsers.includes(selectedBrowser);
+    return matchesSearch && isBrowserCompatible && isPlatformCompatible;
+  };
 
-      const isPlatformCompatible =
-        (!command.platforms || command.platforms.includes(userPlatform)) &&
-        (!command.excludedPlatforms || !command.excludedPlatforms.includes(userPlatform));
+  // …and if it matches, what is withholding it? ALL applicable reasons, not just the first.
+  // Four commands are both untrusted and unusable; reporting one reason under-counted the fix, so
+  // switching off the named preference revealed nothing and the message then blamed a second filter.
+  // A flag-gated URL is exempt from the unusable filter: it names the flag that makes it work.
+  const hiddenReasons = (command: BrowserCommand): string[] => {
+    const reasons: string[] = [];
+    if (hideDebugUrls && command.isDebugCommand) reasons.push("crash commands");
+    if (hideUntrustedUrls && command.isUntrusted) reasons.push("untrusted commands");
+    if (hideDeprecatedUrls && command.isDeprecated) reasons.push("removed commands");
+    if (!showUnopenable && command.notDirectlyReachable && !command.requiresFeatureFlag) {
+      reasons.push("unusable commands");
+    }
+    return reasons;
+  };
 
-      const shouldShowDebug = !hideDebugUrls || !command.isDebugCommand;
-      const shouldShowUntrusted = !hideUntrustedUrls || !command.isUntrusted;
-      const shouldShowDeprecated = !hideDeprecatedUrls || !command.isDeprecated;
+  // One pass: decide relevance, then why (if at all) each relevant command is withheld.
+  const relevantCommands = browserCommands
+    .filter(isRelevant)
+    .map((command) => ({ command, reasons: hiddenReasons(command) }));
 
-      return (
-        matchesSearch &&
-        isBrowserCompatible &&
-        isPlatformCompatible &&
-        shouldShowDebug &&
-        shouldShowUntrusted &&
-        shouldShowDeprecated
-      );
-    })
+  const filteredCommands = relevantCommands
+    .filter(({ reasons }) => reasons.length === 0)
+    .map(({ command }) => command)
     .sort((a, b) => {
       // Starred first, then the file's own ordering
       const aIsStarred = starredSet.has(a.id);
@@ -149,6 +166,11 @@ export default function Command() {
       if (aIsStarred !== bIsStarred) return aIsStarred ? -1 : 1;
       return 0;
     });
+
+  // Only commands that WOULD have matched and are being withheld. A preference being switched on
+  // is not by itself a reason to mention it — for a search nothing matches, nothing is hidden.
+  const withheld = relevantCommands.filter(({ reasons }) => reasons.length > 0);
+  const withheldReasons = [...new Set(withheld.flatMap(({ reasons }) => reasons))];
 
   return (
     <List
@@ -173,23 +195,45 @@ export default function Command() {
       <List.EmptyView
         icon={Icon.MagnifyingGlass}
         title="No Matching Commands"
-        description={
+        description={[
           searchText
-            ? `No ${currentBrowser.title} URL matches “${searchText}”. Try another browser in the dropdown, or clear the search. Crash commands, untrusted URLs and removed URLs are hidden until you turn them on in this command's preferences (⌘⇧,).`
-            : `No ${currentBrowser.title} URLs are visible. Crash commands, untrusted URLs and removed URLs are hidden until you turn them on in this command's preferences (⌘⇧,).`
-        }
+            ? `No ${currentBrowser.title} command matches “${searchText}”.`
+            : `No ${currentBrowser.title} commands are visible.`,
+          // Only surfaced when something matching is genuinely being withheld — naming a filter
+          // that is hiding nothing sends people to a setting that cannot help.
+          withheld.length > 0
+            ? `${countOf(withheld.length, "match")} hidden: ${withheldReasons.join(", ")}.`
+            : searchText
+              ? "Try another browser in the dropdown, or clear the search."
+              : undefined,
+        ]
+          .filter(Boolean)
+          .join(" ")}
       />
       {filteredCommands.map((command) => {
         const isStarred = starredSet.has(command.id);
         const description = describe(command) || "No description available.";
         const fullUrl = getFullUrl(command.path);
         const kind = commandKind(command);
+        // Non-undefined only when we have both a browser we can name and permission to launch it.
+        const launchApp =
+          canLaunchBrowsers && currentBrowser.appName && isBrowserInstalled(currentBrowser.key)
+            ? (browserAppPath(installedBrowsers, currentBrowser.key) ?? currentBrowser.appName)
+            : undefined;
 
         const accessories: List.Item.Accessory[] = [];
         if (command.isDeprecated) accessories.push({ tag: { value: "Removed", color: Color.SecondaryText } });
         if (command.requiresFeatureFlag) accessories.push({ tag: { value: "Flag", color: Color.Yellow } });
-        else if (command.notDirectlyReachable) accessories.push({ tag: { value: "Won't Open", color: Color.Yellow } });
-        if (isStarred) accessories.push({ icon: Icon.Star, tooltip: "Starred" });
+        else if (command.notDirectlyReachable)
+          accessories.push(
+            showDetail
+              ? {
+                  icon: { source: Icon.Warning, tintColor: Color.Orange },
+                  tooltip: "Don't use — this URL won't load in a tab",
+                }
+              : { tag: { value: "Don't Use", color: Color.Orange } },
+          );
+        if (isStarred) accessories.push({ icon: { source: Icon.Star, tintColor: Color.Magenta }, tooltip: "Starred" });
 
         const markdown = [
           `# ${command.name}`,
@@ -199,10 +243,10 @@ export default function Command() {
           command.requiresFeatureFlag
             ? `\n> **Behind a flag.** Launch with \`--enable-features=${command.requiresFeatureFlag}\`, or the page will not load.`
             : command.notDirectlyReachable
-              ? "\n> **Will not open in a tab.** Chrome advertises this URL, but it is either a panel embedded in browser UI or gated behind a feature flag. Opening it shows a network error."
+              ? "\n> **Don't use this one.** Chrome lists the URL, but navigating to it returns a network error. Most are panels drawn inside the browser's own interface rather than standalone pages."
               : "",
           command.isDebugCommand
-            ? "\n> **This will crash, hang, or quit the browser.** Unsaved work in other tabs will be lost."
+            ? "\n> **This deliberately crashes, hangs, or quits the browser.** Depending on the command that may take down one tab, the GPU process, or the whole browser with everything unsaved in it."
             : "",
           command.isInternalDebugging
             ? "\n> **Needs internal debugging pages.** Open `chrome://chrome-urls` in the browser and choose *Enable internal debugging pages* first, or this shows a placeholder."
@@ -275,7 +319,11 @@ export default function Command() {
                           <List.Item.Detail.Metadata.Separator />
                           <List.Item.Detail.Metadata.Label
                             title="Opening"
-                            text={`${currentBrowser.title} is not installed — copy the URL instead.`}
+                            text={
+                              isCheckingBrowsers
+                                ? `Checking whether ${currentBrowser.title} is installed…`
+                                : `${currentBrowser.title} is not installed — copy the URL instead.`
+                            }
                             icon={{ source: Icon.Clipboard, tintColor: Color.SecondaryText }}
                           />
                         </>
@@ -285,8 +333,8 @@ export default function Command() {
                       <>
                         <List.Item.Detail.Metadata.Separator />
                         <List.Item.Detail.Metadata.Label
-                          title="Opens in a Tab"
-                          text="No — embedded panel or flag-gated"
+                          title="Usable"
+                          text="No — Chrome lists it, but navigating to it returns a network error"
                           icon={{ source: Icon.Warning, tintColor: Color.Yellow }}
                         />
                       </>
@@ -305,7 +353,7 @@ export default function Command() {
                     <List.Item.Detail.Metadata.Label
                       title="Starred"
                       text={isStarred ? "Yes" : "No"}
-                      icon={isStarred ? { source: Icon.Star, tintColor: Color.Green } : undefined}
+                      icon={isStarred ? { source: Icon.Star, tintColor: Color.Magenta } : undefined}
                     />
                   </List.Item.Detail.Metadata>
                 }
@@ -313,20 +361,12 @@ export default function Command() {
             }
             actions={
               <ActionPanel title={command.name}>
-                {canLaunchBrowsers && isBrowserInstalled(currentBrowser.key) && (
+                {launchApp !== undefined && (
                   <Action
                     title={`Open in ${currentBrowser.title}`}
                     icon={browserIcon(currentBrowser, installedBrowsers)}
-                    onAction={async () => {
-                      if (!currentBrowser.appName) {
-                        await showError(new Error(`No application name is configured for ${currentBrowser.title}.`), {
-                          title: "Browser Error",
-                          copyContext: `browser=${currentBrowser.key} url=${fullUrl}`,
-                        });
-                        return;
-                      }
-                      await openUrlInBrowser(currentBrowser.appName, fullUrl);
-                    }}
+                    style={command.isDebugCommand ? Action.Style.Destructive : undefined}
+                    onAction={() => openUrlInBrowser({ app: launchApp, name: currentBrowser.title }, fullUrl, command)}
                   />
                 )}
                 {/* Sits directly below Open so it inherits the primary slot whenever Open is absent
@@ -338,7 +378,7 @@ export default function Command() {
                 />
                 <Action
                   title={isStarred ? "Unstar" : "Star"}
-                  icon={isStarred ? Icon.StarDisabled : Icon.Star}
+                  icon={{ source: isStarred ? Icon.StarDisabled : Icon.Star, tintColor: Color.Magenta }}
                   onAction={() => toggleStar(command.id)}
                   shortcut={Keyboard.Shortcut.Common.Pin}
                 />
@@ -347,9 +387,27 @@ export default function Command() {
                     commandPath={command.path}
                     currentBrowser={selectedBrowser}
                     supportedBrowsers={command.supportedBrowsers}
+                    command={command}
                     installedBrowsers={installedBrowsers}
                   />
                 )}
+                {canLaunchBrowsers && (
+                  <Action
+                    title="Recheck Installed Browsers"
+                    icon={Icon.ArrowClockwise}
+                    shortcut={Keyboard.Shortcut.Common.Refresh}
+                    onAction={() => recheckBrowsers()}
+                  />
+                )}
+                <Action
+                  title={showUnopenable ? "Hide Unusable Commands" : "Show Unusable Commands"}
+                  icon={showUnopenable ? Icon.EyeDisabled : Icon.Eye}
+                  shortcut={{
+                    macOS: { modifiers: ["cmd", "shift"], key: "h" },
+                    Windows: { modifiers: ["ctrl", "shift"], key: "h" },
+                  }}
+                  onAction={() => setShowUnopenable((v) => !v)}
+                />
                 <Action
                   title="Toggle Sidebar"
                   icon={Icon.AppWindowSidebarRight}

@@ -10,7 +10,15 @@
   "keywords": [
     "browsers",
     "urls",
-    "chromium"
+    "chromium",
+    "chrome",
+    "edge",
+    "brave",
+    "opera",
+    "vivaldi",
+    "arc",
+    "dia",
+    "comet"
   ],
   "platforms": [
     "macOS",
@@ -32,31 +40,31 @@
       "required": false,
       "title": "Hide Crash Commands",
       "label": "Hide commands that crash or hang the browser",
-      "description": "Hide the Command URLs for Debug \u2014 chrome://crash, chrome://hang, chrome://gpucrash and the rest. They deliberately crash, hang, or terminate the browser and will lose unsaved work. Internal debugging pages, which are harmless, are not affected by this.",
+      "description": "Hide the Command URLs for Debug — chrome://crash, chrome://hang, chrome://gpucrash and the rest. They deliberately crash, hang, or terminate the browser and will lose unsaved work. Internal debugging pages, which are harmless, are not affected by this.",
       "default": true
     },
     {
       "name": "hideUntrustedUrls",
       "type": "checkbox",
       "required": false,
-      "title": "Hide Untrusted URLs",
-      "label": "Hide chrome-untrusted:// URLs",
-      "description": "Hide chrome-untrusted:// URLs which run in isolated security contexts. These are advanced features that may cause unexpected behavior if you don't understand their purpose.",
+      "title": "Hide Untrusted Commands",
+      "label": "Hide chrome-untrusted:// commands",
+      "description": "Hide chrome-untrusted:// commands, which run in isolated security contexts. These are advanced features that may behave unexpectedly if you don't understand their purpose.",
       "default": true
     },
     {
       "name": "hideDeprecatedUrls",
       "type": "checkbox",
       "required": false,
-      "title": "Hide Removed URLs",
-      "label": "Hide URLs removed from every browser",
-      "description": "Hide internal URLs that no longer exist in any supported browser. Turn this off to keep them searchable, with a note about when they were removed and what replaced them.",
+      "title": "Hide Removed Commands",
+      "label": "Hide commands removed from every browser",
+      "description": "Hide commands that no longer exist in any supported browser. Turn this off to keep them searchable, with a note about when they were removed and what replaced them.",
       "default": true
     }
   ],
   "dependencies": {
     "@chrismessina/raycast-kit": "^0.2.0",
-    "@raycast/api": "^2.2.1",
+    "@raycast/api": "^2.4.1",
     "@raycast/utils": "^2.3.1"
   },
   "devDependencies": {
