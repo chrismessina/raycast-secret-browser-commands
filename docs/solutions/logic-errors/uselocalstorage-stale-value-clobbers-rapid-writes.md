@@ -125,7 +125,7 @@ rather than driving the real component, and was not kept; treat it as a reproduc
 mechanism, not as a regression test. An independent read-only probe during adversarial review
 reproduced both defects the same way.
 
-Shipped in `raycast/extensions#31118` (open at the time of writing).
+Shipped in `raycast/extensions#31118`, merged 2026-09-15.
 
 ## Why This Works
 
