@@ -12,3 +12,4 @@
 - [X] Retire ChatGPT Atlas (app bundle is an empty stub; no longer a going concern)
 - [ ] Re-run the census on each Chromium major and diff it into `docs/paths.md`
 - [ ] Identify more flag-gated URLs — `chrome://tab-group-home` is advertised but only resolves with `--enable-features=TabGroupHome`, and there are likely others
+- [ ] Convert `src/utils/sort-urls.js` to ES modules. It uses `require` and `__dirname`, but `package.json` sets `"type": "module"`, so `node src/utils/sort-urls.js` fails before it writes the `src/data/paths.ts.bak` backup or sorts anything (found by Codex, 2026-11-20). Use `import` and `fileURLToPath(import.meta.url)` (or rename it to `.cjs`), run it once against a copy of `paths.ts`, then drop the "currently fails" note from `CONTRIBUTING.md`

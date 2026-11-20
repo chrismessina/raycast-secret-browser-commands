@@ -16,3 +16,5 @@ dist
 npm-debug.log
 .claude
 CONTRIBUTING.md
+# Mirror-only backlog; TODO.md ships only for brew and dev-null
+TODO.md
