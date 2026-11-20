@@ -140,3 +140,5 @@ The commands in this extension come from, in order of authority:
 - [chrome_url_data_manager_browsertest.cc](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/ui/webui/chrome_url_data_manager_browsertest.cc) - internal Chrome URLs exercised by tests
 
 They provide access to internal browser pages for debugging, diagnostics, configuration, and feature management. Vendor-specific pages (Brave, Opera, Edge, Comet, Arc, Dia) do not appear in Chromium source at all and come only from the live census.
+
+Want to contribute? See [CONTRIBUTING.md](https://github.com/chrismessina/raycast-secret-browser-commands/blob/main/CONTRIBUTING.md).
